@@ -1,0 +1,6 @@
+# Desarrollo local: web + servidor uvicorn + bot de Telegram (LangGraph)
+-r requirements.txt
+uvicorn>=0.32
+python-telegram-bot~=21.6
+langgraph~=0.6
+langgraph-checkpoint-sqlite~=2.0

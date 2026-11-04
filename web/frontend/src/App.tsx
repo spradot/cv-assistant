@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type EstadoAuth, type Resumen, type Usuario } from "./api";
+import { api, type EstadoAuth, type Job, type Resumen, type Usuario } from "./api";
 import Ajustes from "./components/Ajustes";
 import Auth from "./components/Auth";
 import Consumo from "./components/Consumo";
@@ -7,6 +7,10 @@ import Documentacion from "./components/Documentacion";
 import Onboarding from "./components/Onboarding";
 import { DetallePostulacion, ESTADOS, NuevaPostulacion } from "./components/Postulacion";
 import { Chip, Spinner } from "./components/ui";
+import { useJobs } from "./hooks/useJobs";
+
+type Aviso = { id: number; ok: boolean; texto: string; postulacionId: number };
+const TITULO = document.title;
 
 type Vista = "postulaciones" | "documentacion" | "consumo" | "ajustes";
 
@@ -58,6 +62,27 @@ function Principal({ usuario, onUsuario, onSalir }: { usuario: Usuario; onUsuari
   const [instruccionDoc, setInstruccionDoc] = useState("");
   const [filtro, setFiltro] = useState("");
   const [proveedor, setProveedor] = useState<string | null>(null);
+  const [avisos, setAvisos] = useState<Aviso[]>([]);
+  const [refresco, setRefresco] = useState(0);
+
+  // Un CV en segundo plano terminó (o falló): toast, notificación del navegador y marca en el título.
+  const terminado = (j: Job) => {
+    const ok = j.estado === "listo";
+    const texto = ok ? `CV de ${j.empresa} listo` : `No se pudo generar el CV de ${j.empresa}`;
+    setAvisos((a) => [...a, { id: j.id, ok, texto: j.error ? `${texto}: ${j.error}` : texto, postulacionId: j.postulacion_id }]);
+    setRefresco((n) => n + 1);
+    recargar();
+    if (document.hidden) {
+      document.title = `${ok ? "✅" : "⚠️"} ${texto}`;
+      if ("Notification" in window && Notification.permission === "granted") new Notification(texto, { body: j.error ?? "Ábrelo para revisarlo." });
+    }
+  };
+  const { activos } = useJobs(terminado);
+  useEffect(() => {
+    const restaurar = () => (document.title = TITULO);
+    window.addEventListener("focus", restaurar);
+    return () => window.removeEventListener("focus", restaurar);
+  }, []);
 
   const recargar = () => api.listar().then(setLista).catch(() => {});
   useEffect(() => {
@@ -97,6 +122,29 @@ function Principal({ usuario, onUsuario, onSalir }: { usuario: Usuario; onUsuari
         </div>
       </header>
 
+      <div className="fixed bottom-4 right-4 z-30 flex w-80 flex-col gap-2">
+        {avisos.map((a) => (
+          <div
+            key={a.id}
+            className={`card flex items-start gap-2 py-2 text-sm shadow-lg ${a.ok ? "border-emerald-300" : "border-red-300"}`}
+            role="status"
+          >
+            <button
+              className="flex-1 text-left"
+              onClick={() => {
+                setVista("postulaciones");
+                setSeleccion(a.postulacionId);
+                setAvisos((x) => x.filter((y) => y.id !== a.id));
+              }}
+            >
+              {a.ok ? "✅" : "⚠️"} {a.texto}
+              <span className="block text-xs text-slate-500">Clic para abrir</span>
+            </button>
+            <button aria-label="Cerrar" onClick={() => setAvisos((x) => x.filter((y) => y.id !== a.id))}>×</button>
+          </div>
+        ))}
+      </div>
+
       <main className="mx-auto max-w-[1600px] p-4">
         {vista === "documentacion" && <Documentacion instruccionInicial={instruccionDoc} onInstruccionUsada={() => setInstruccionDoc("")} angulos={usuario.config.angulos} />}
         {vista === "consumo" && <Consumo />}
@@ -121,7 +169,11 @@ function Principal({ usuario, onUsuario, onSalir }: { usuario: Usuario; onUsuari
                     <span className="text-xs tabular-nums text-slate-500">{p.fit_score ?? "?"}%</span>
                   </div>
                   <div className="mt-0.5 flex items-center gap-1.5">
-                    <Chip ok={ESTADOS[p.estado]?.ok}>{ESTADOS[p.estado]?.texto ?? p.estado}</Chip>
+                    {activos.some((j) => j.postulacion_id === p.id) ? (
+                      <Chip ok={null}>⏳ Generando…</Chip>
+                    ) : (
+                      <Chip ok={ESTADOS[p.estado]?.ok}>{ESTADOS[p.estado]?.texto ?? p.estado}</Chip>
+                    )}
                     <span className="text-[11px] text-slate-400">{p.creado_en.slice(0, 10)}</span>
                   </div>
                 </button>
@@ -142,6 +194,8 @@ function Principal({ usuario, onUsuario, onSalir }: { usuario: Usuario; onUsuari
                   id={seleccion}
                   angulos={usuario.config.angulos}
                   onCambio={recargar}
+                  job={activos.find((j) => j.postulacion_id === seleccion)}
+                  refresco={refresco}
                   onUsarEnDocumentacion={(instr) => {
                     setInstruccionDoc(instr);
                     setVista("documentacion");

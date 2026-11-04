@@ -107,6 +107,15 @@ export type Postulacion = Resumen & {
   n_versiones: number;
 };
 
+export type Job = {
+  id: number;
+  postulacion_id: number;
+  empresa: string;
+  estado: "pendiente" | "ejecutando" | "listo" | "error";
+  etapa: string | null;
+  error: string | null;
+};
+
 async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
   const init: RequestInit = { method };
   if (body instanceof FormData) init.body = body;
@@ -182,7 +191,9 @@ export const api = {
   obtener: (id: number) => req<Postulacion>("GET", `/api/postulaciones/${id}`),
   eliminar: (id: number) => req<{ ok: boolean }>("DELETE", `/api/postulaciones/${id}`),
   angulo: (id: number, angulo: string) => req<Postulacion>("POST", `/api/postulaciones/${id}/angulo`, { angulo }),
-  generar: (id: number, feedback?: string) => req<Postulacion>("POST", `/api/postulaciones/${id}/generar`, { feedback: feedback || null }),
+  generar: (id: number, feedback?: string) => req<{ job: Job }>("POST", `/api/postulaciones/${id}/generar`, { feedback: feedback || null }),
+  jobs: () => req<Job[]>("GET", "/api/jobs"),
+  jobVisto: (id: number) => req<{ ok: boolean }>("POST", `/api/jobs/${id}/visto`),
   atsRecomendaciones: (id: number) => req<RecomendacionATS[]>("POST", `/api/postulaciones/${id}/ats-recomendaciones`),
   ajustarPreview: (id: number, instruccion: string) =>
     req<PreviewCV>("POST", `/api/postulaciones/${id}/ajustar/preview`, { instruccion }),

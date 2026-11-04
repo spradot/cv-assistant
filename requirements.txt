@@ -1,0 +1,12 @@
+# Dependencias de la WEB (Vercel las instala desde este archivo).
+# Para el bot de Telegram y el servidor local: pip install -r requirements-dev.txt
+fastapi>=0.115
+python-multipart>=0.0.12
+openai~=1.54
+typesafe-sdk
+python-dotenv~=1.0
+pypdf~=5.0
+python-docx~=1.1
+PyYAML>=6.0
+psycopg[binary]>=3.2
+rendercv[full]~=2.3

@@ -1,0 +1,10 @@
+.venv
+.env
+.env.*
+!.env.example
+mi_perfil.md
+web/frontend/node_modules
+*.db
+*.log
+supabase
+__pycache__

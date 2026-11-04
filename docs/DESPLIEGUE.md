@@ -28,8 +28,9 @@ En GitHub: Settings → Branches → proteger `main` (PR obligatorio).
 
 ## 3. Vercel
 
-1. Add New Project → importar el repo. Framework Preset: **Other**. Root Directory: la raíz. `vercel.json` ya define
-   el build (`npm ci && npm run build` del frontend), el directorio de salida (`web/static`) y la función Python (`api/index.py`).
+1. Add New Project → importar el repo. Root Directory: la raíz. `vercel.json` define dos *services*:
+   `backend` (FastAPI, `api/index.py`, recibe `/api/*` con el prefijo intacto) y `frontend` (Vite en `web/frontend`, salida `web/static`, sirve el resto).
+   No hay bindings: el navegador llama a `/api` en el mismo dominio. Probar en local con `vercel dev`.
 2. Settings → Git → **Production Branch = `main`**. Las demás ramas (`dev`) generan Preview.
 3. Settings → Environment Variables (marcar el entorno correcto):
 

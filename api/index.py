@@ -1,5 +1,5 @@
 """Punto de entrada de Vercel: expone la app FastAPI como función serverless.
-vercel.json reescribe /api/* hacia aquí; el frontend (web/static) lo sirve la CDN."""
+servicio "backend" de vercel.json: las rutas /api/* llegan aquí con el prefijo intacto; el servicio "frontend" sirve el resto."""
 
 import sys
 from pathlib import Path

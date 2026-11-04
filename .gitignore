@@ -1,0 +1,27 @@
+# Secretos y entorno
+.env
+.env.*
+!.env.example
+.venv/
+.vercel/
+
+# Datos personales / locales (perfil del bot de Telegram, CVs generados, bases y logs)
+mi_perfil.md
+/YAML/
+/procesados/
+/rendercv_output/
+/backups_readme/
+/data/
+/*.pdf
+/DE_*.yaml
+/DS_*.yaml
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Build y cachés
+__pycache__/
+*.pyc
+node_modules/
+web/static/

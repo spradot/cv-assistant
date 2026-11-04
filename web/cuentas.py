@@ -10,6 +10,7 @@ usuario (dónde vive su documentación, respaldos y PDFs, y sus preferencias).
 
 import hashlib
 import hmac
+import logging
 import os
 import re
 import secrets
@@ -363,6 +364,16 @@ def confirmar_reset(token: str, nueva: str) -> None:
     if f is None:
         raise ValueError("El link expiró o ya se usó. Pide uno nuevo.")
     cambiar_password(f["user_id"], None, nueva)
+
+
+def avisar(usuario: Usuario, asunto: str, cuerpo: str) -> None:
+    """Correo opcional al usuario (si hay SMTP y email). Nunca rompe el flujo que lo llama."""
+    if not (smtp_configurado() and usuario.email):
+        return
+    try:
+        _enviar_correo(usuario.email, asunto, cuerpo)
+    except Exception:
+        logging.getLogger(__name__).warning("no se pudo enviar el aviso a %s", usuario.username, exc_info=True)
 
 
 def _enviar_correo(destino: str, asunto: str, cuerpo: str) -> None:

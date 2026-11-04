@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 
 import yaml
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -27,7 +27,7 @@ from bot.classifier import clasificar
 from bot.config import CLASSIFIER_PROVIDER, DEEPSEEK_MODEL
 from bot.deepseek_client import ajustar_cv, generar_contenido, generar_cv_base, pide_proyectos, recomendaciones_ats
 from bot.graph import _sanear_cv as sanear_cv, renderizar_cv
-from web import cuentas, storage, store
+from web import cuentas, jobs, storage, store
 from web.cuentas import Usuario
 
 _AQUI = Path(__file__).resolve().parent
@@ -68,7 +68,7 @@ async def _sesion(request: Request, call_next):
     request.state.usuario = usuario
     token = llm.usuario_actual.set(usuario.id if usuario else None)
     try:
-        if es_api and not request.url.path.startswith("/api/auth/") and usuario is None:
+        if es_api and not request.url.path.startswith(("/api/auth/", "/api/internal/")) and usuario is None:
             return JSONResponse({"detail": "No autenticado"}, status_code=401)
         return await call_next(request)
     finally:
@@ -634,26 +634,28 @@ def postulaciones_angulo(pid: int, body: Angulo, u: Usuario = Depends(actual)):
     return _publica(_cargar(u, pid))
 
 
-@app.post("/api/postulaciones/{pid}/generar")
-def postulaciones_generar(pid: int, body: Generar, u: Usuario = Depends(actual)):
-    """Paso 4: generar CV completo (desde cero) + comentarios para el portal + ATS.
+def _generar_cv(u: Usuario, p: dict, feedback: str | None, etapa=lambda texto: None) -> None:
+    """Paso 4: generar CV completo (desde cero) + comentarios para el portal + ATS, y guardarlo en la
+    postulación. Es lento (varias llamadas a IA + renders), por eso corre en un job (ver /generar).
     Se puede forzar aunque la recomendación sea 'descartar' (excepción consciente)."""
-    p = _cargar(u, pid)
     destino = u.destino_render
+    etapa("Generando el contenido con IA")
     contenido = generar_contenido(
         oferta_texto=p["oferta_texto"],
         perfil_readme=u.perfil_ia(),
         cv_referencia=store.referencia_cv(u.id, p["angulo"]),
         empresa=p["empresa"],
-        feedback_usuario=body.feedback,
+        feedback_usuario=feedback,
     )
+    etapa("Renderizando y ajustando a 1 página")
     try:
         cv, yaml_content, pdf_local, paginas = renderizar_cv(
             contenido.cv, p["angulo"], p["empresa"], perfil=u.perfil_ia(), oferta=p["oferta_texto"],
-            proyectos=pide_proyectos(body.feedback), **destino
+            proyectos=pide_proyectos(feedback), **destino
         )
     except RuntimeError as e:
-        raise HTTPException(500, f"rendercv falló tras 3 intentos de reparación:\n{e}")
+        raise RuntimeError(f"rendercv falló tras 3 intentos de reparación:\n{e}")
+    etapa("Chequeo ATS y guardado")
     ats = ats_check.evaluar(pdf_local, contenido.keywords_ats)
     pdf_path = u.subir_pdf(pdf_local)  # clave en Storage
     datos = _datos(p)
@@ -678,11 +680,90 @@ def postulaciones_generar(pid: int, body: Generar, u: Usuario = Depends(actual))
         ats_recomendaciones=None,
     )
     datos.setdefault("historial", []).append(
-        {"accion": "Regenerado con feedback: " + body.feedback if body.feedback else "CV generado",
+        {"accion": "Regenerado con feedback: " + feedback if feedback else "CV generado",
          "ats_cobertura": ats.cobertura, "paginas": paginas}
     )
-    store.guardar(u.id, pid, "generado", datos)
-    return _publica(_cargar(u, pid))
+    store.guardar(u.id, p["id"], "generado", datos)
+
+
+def _base_url(request: Request) -> str:
+    """URL pública desde la que se llama al worker (tras el proxy de Vercel usa los headers reenviados)."""
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    return f"{proto}://{host.split(',')[0].strip()}"
+
+
+@app.post("/api/postulaciones/{pid}/generar", status_code=202)
+def postulaciones_generar(pid: int, body: Generar, request: Request, u: Usuario = Depends(actual)):
+    """Encola la generación y responde al tiro; el avance y el aviso final salen de GET /api/jobs.
+    Si ya hay una generación en curso para esta postulación, devuelve esa (no duplica el costo)."""
+    p = _cargar(u, pid)
+    if not u.perfil_ia().strip():
+        raise HTTPException(400, "Primero completa tu documentación de perfil.")
+    job, nuevo = jobs.encolar(u.id, p["id"], {"feedback": body.feedback})
+    if nuevo:
+        jobs.despachar(_base_url(request), job["id"])
+    return {"job": {**job, "empresa": p["empresa"]}}
+
+
+def _mensaje_error(e: Exception) -> str:
+    if isinstance(e, HTTPException):
+        return str(e.detail)[:600]
+    if isinstance(e, RuntimeError):
+        return str(e)[:600]
+    return f"Error inesperado ({type(e).__name__}): {str(e)[:300]}"
+
+
+@app.post("/api/internal/jobs/{job_id}/ejecutar")
+def jobs_ejecutar(job_id: int, x_job_token: str | None = Header(None)):
+    """Worker: lo invoca el propio servidor (firmado con HMAC), no el navegador. Corre en su propia
+    invocación de la función, así que tiene su propio límite de duración."""
+    if not jobs.token_valido(job_id, x_job_token):
+        raise HTTPException(403, "Token inválido")
+    job = jobs.reclamar(job_id)
+    if job is None:  # ya lo tomó otro worker o terminó
+        return {"ok": True, "ignorado": True}
+    u = cuentas.obtener(job["user_id"])
+    token_uso = llm.usuario_actual.set(job["user_id"])  # atribuye el consumo de IA al usuario
+    p = None
+    try:
+        p = store.obtener(job["user_id"], job["postulacion_id"])
+        if u is None or p is None:
+            raise RuntimeError("La postulación o el usuario ya no existen.")
+        with jobs.Latido(job_id):
+            _generar_cv(u, p, (job["params"] or {}).get("feedback"), lambda texto: jobs.etapa(job_id, texto))
+        jobs.terminar(job_id)
+        error = None
+    except Exception as e:
+        logging.getLogger(__name__).exception("job %s falló", job_id)
+        error = _mensaje_error(e)
+        jobs.terminar(job_id, error)
+    finally:
+        llm.usuario_actual.reset(token_uso)
+    if u is not None and p is not None:
+        cuentas.avisar(
+            u,
+            f"CV de {p['empresa']}: {'no se pudo generar' if error else 'listo'}",
+            f"Hola {u.nombre},\n\n" + (f"No se pudo generar el CV para {p['empresa']}:\n{error}" if error else f"Tu CV para {p['empresa']} está listo.")
+            + f"\n\nAbre la app: {cuentas.APP_URL}",
+        )
+    return {"ok": True, "error": error}
+
+
+@app.get("/api/jobs")
+def jobs_listar(request: Request, u: Usuario = Depends(actual)):
+    """Estado de las generaciones activas y de las terminadas que aún no se notificaron. También recupera
+    jobs atascados (ver web/jobs.py)."""
+    lista, reintentar = jobs.visibles(u.id)
+    for job_id in reintentar[:1]:  # de a uno por consulta: cada despacho espera ~2 s
+        jobs.despachar(_base_url(request), job_id)
+    return lista
+
+
+@app.post("/api/jobs/{job_id}/visto")
+def jobs_visto(job_id: int, u: Usuario = Depends(actual)):
+    jobs.marcar_visto(u.id, job_id)
+    return {"ok": True}
 
 
 @app.post("/api/postulaciones/{pid}/ats-recomendaciones")

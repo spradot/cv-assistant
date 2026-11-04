@@ -28,8 +28,9 @@ En GitHub: Settings → Branches → proteger `main` (PR obligatorio).
 
 ## 3. Vercel
 
-1. Add New Project → importar el repo. Framework Preset: **Other**. Root Directory: la raíz. `vercel.json` ya define
-   el build (`npm ci && npm run build` del frontend), el directorio de salida (`web/static`) y la función Python (`api/index.py`).
+1. Add New Project → importar el repo. Root Directory: la raíz. `vercel.json` define dos *services*:
+   `backend` (FastAPI, `api/index.py`, recibe `/api/*` con el prefijo intacto) y `frontend` (Vite en `web/frontend`, salida `web/static`, sirve el resto).
+   No hay bindings: el navegador llama a `/api` en el mismo dominio. Probar en local con `vercel dev`.
 2. Settings → Git → **Production Branch = `main`**. Las demás ramas (`dev`) generan Preview.
 3. Settings → Environment Variables (marcar el entorno correcto):
 
@@ -41,15 +42,23 @@ En GitHub: Settings → Branches → proteger `main` (PR obligatorio).
    | `SUPABASE_BUCKET` | `cvs` | `cvs` |
    | `CODIGO_INVITACION` | **obligatorio** (si no, cualquiera crea cuentas y gasta tu IA) | recomendado |
    | `APP_URL` | URL de producción | opcional (usa `VERCEL_URL`) |
-   | `SMTP_*` (opcional) | ✔ | ✔ |
+   | `SMTP_*` (opcional; habilita el aviso por correo al terminar un CV) | ✔ | ✔ |
+   | `JOBS_SECRET` (opcional) | ✔ | ✔ |
+   | `VERCEL_AUTOMATION_BYPASS_SECRET` | — | **necesario** si Deployment Protection está activo en Preview |
 
 4. Región de la función: Settings → Functions → la más cercana a tu proyecto Supabase.
 5. Deploy. Crea la primera cuenta (será la administradora) enseguida, con el código de invitación.
 
 ## Notas operativas
 
-- **Duración**: generar un CV encadena varias llamadas a IA + render; `vercel.json` pide `maxDuration: 300`
-  (máximo con Fluid Compute; Hobby sin Fluid Compute admite 60 s).
+- **Generación de CVs en segundo plano**: `POST /generar` solo encola un job (tabla `jobs`) y responde en ~2 s. Un worker
+  (`/api/internal/jobs/<id>/ejecutar`, otra invocación de la función, firmado con HMAC) hace el trabajo con su propio
+  límite de `maxDuration` (300 s en `vercel.json`; Hobby sin Fluid Compute admite 60 s). El frontend consulta `GET /api/jobs`
+  cada 4 s mientras haya un job activo y avisa con toast + notificación del navegador (+ correo si hay SMTP).
+- **Recuperación**: si el worker no arranca (>15 s pendiente) o muere (sin latido >90 s), la propia consulta lo reintenta
+  (máx. 2 intentos) y luego lo marca con error. A lo más hay un job activo por postulación (el doble clic no duplica costo).
+- **Preview con Deployment Protection**: sin `VERCEL_AUTOMATION_BYPASS_SECRET` el worker recibe 401 y los jobs de Preview
+  terminan en error tras ~2 min. Producción no lo necesita.
 - **Disco efímero**: rendercv renderiza en `/tmp` y el PDF se sube a Storage. Nada persiste en la función.
 - **Bot de Telegram**: sigue corriendo local con SQLite (`bot/db.py`); no comparte datos con la web.
 - **Rollback**: Vercel → Deployments → Promote a una versión anterior. Los cambios de esquema son aditivos: crea

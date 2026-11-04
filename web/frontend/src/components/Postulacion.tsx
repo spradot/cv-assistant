@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type Postulacion as P, type RecomendacionATS, type SugerenciaDoc } from "../api";
+import { api, type Job, type Postulacion as P, type RecomendacionATS, type SugerenciaDoc } from "../api";
 import { Chip, Copiable, DiffView, ErrorBox, Modal, Spinner, useAccion } from "./ui";
 
 type Preview = { titulo: string; accion: string; cv_yaml: string; diff: string };
@@ -61,11 +61,17 @@ export function DetallePostulacion({
   angulos,
   onCambio,
   onUsarEnDocumentacion,
+  job,
+  refresco,
 }: {
   id: number;
   angulos: Record<string, string>;
   onCambio: () => void;
   onUsarEnDocumentacion: (instruccion: string) => void;
+  /** Generación en segundo plano de esta postulación (si hay una activa). */
+  job?: Job;
+  /** Sube cuando termina un job: recarga el detalle. */
+  refresco: number;
 }) {
   const [p, setP] = useState<P | null>(null);
   const [verOferta, setVerOferta] = useState(false);
@@ -85,6 +91,11 @@ export function DetallePostulacion({
     setSugerencias(null);
     correr("Cargando", async () => setP(await api.obtener(id)));
   }, [id]);
+
+  // Un job de generación terminó: recarga el detalle sin parpadeo (no vacía `p`).
+  useEffect(() => {
+    if (refresco > 0) api.obtener(id).then(setP).catch(() => {});
+  }, [refresco]);
 
   useEffect(() => {
     const r = p?.ats_recomendaciones ?? null;
@@ -119,7 +130,16 @@ export function DetallePostulacion({
 
   const descartar = p.recomendacion !== "postular";
   const cobertura = p.ats_cobertura != null ? Math.round(p.ats_cobertura * 100) : null;
-  const ocupado = !!cargando;
+  const generando = !!job && (job.estado === "pendiente" || job.estado === "ejecutando");
+  const ocupado = !!cargando || generando;
+
+  /** La generación tarda (IA + render): se encola y la app avisa al terminar (ver hooks/useJobs). */
+  async function encolarGeneracion(feedback?: string) {
+    if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+    const r = await correr("Encolando", () => api.generar(p!.id, feedback));
+    if (r) window.dispatchEvent(new Event("jobs-cambio"));
+    return !!r;
+  }
 
   return (
     <div className="space-y-4">
@@ -132,7 +152,15 @@ export function DetallePostulacion({
       )}
       {cargando && cargando !== "Cargando" && (
         <div className="sticky top-2 z-10 card border-indigo-300 py-2 dark:border-indigo-800">
-          <Spinner label={`${cargando}… (DeepSeek + rendercv pueden tardar 30-90 s)`} />
+          <Spinner label={cargando === "Encolando" ? "Encolando…" : `${cargando}… (DeepSeek + rendercv pueden tardar 30-90 s)`} />
+        </div>
+      )}
+      {generando && (
+        <div className="sticky top-2 z-10 card border-indigo-300 py-2 dark:border-indigo-800">
+          <Spinner label={`Generando el CV en segundo plano${job?.etapa ? ` — ${job.etapa}` : ""}…`} />
+          <p className="mt-1 text-xs text-slate-500">
+            Puedes seguir usando la app: te avisaremos aquí cuando esté listo (y por correo, si está configurado).
+          </p>
         </div>
       )}
 
@@ -190,7 +218,7 @@ export function DetallePostulacion({
 
         {!p.cv && (
           <div className="flex flex-wrap items-center gap-3 border-t border-slate-200 pt-3 dark:border-slate-800">
-            <button className={descartar ? "btn-ghost" : "btn-primary"} disabled={ocupado} onClick={() => actualizar("Generando CV", () => api.generar(p.id))}>
+            <button className={descartar ? "btn-ghost" : "btn-primary"} disabled={ocupado} onClick={() => encolarGeneracion()}>
               📄 {descartar ? "Generar CV de todos modos" : "Generar CV ajustado"}
             </button>
             {descartar && <span className="text-xs text-slate-500">La recomendación es no postular — puedes hacer una excepción consciente.</span>}
@@ -362,7 +390,7 @@ export function DetallePostulacion({
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
               />
-              <button className="btn-ghost" disabled={ocupado} onClick={async () => (await actualizar("Regenerando CV", () => api.generar(p.id, feedback))) && setFeedback("")}>
+              <button className="btn-ghost" disabled={ocupado} onClick={async () => (await encolarGeneracion(feedback)) && setFeedback("")}>
                 🔄 Regenerar
               </button>
             </div>

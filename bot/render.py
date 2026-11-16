@@ -19,6 +19,20 @@ _PLANTILLAS = PROJECT_ROOT / "bot" / "templates"
 _VENV_PYTHON = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
 
 
+def _env_subproceso() -> dict | None:
+    """En Vercel las dependencias no están en el site-packages de /var/lang/bin/python: el runtime
+    las agrega a sys.path al arrancar, y un subproceso no hereda eso ("No module named rendercv").
+    Se pasa el sys.path del padre como PYTHONPATH. Además solo /tmp es escribible: typst/rendercv
+    cachean en el HOME."""
+    if not os.environ.get("VERCEL"):
+        return None
+    tmp = tempfile.gettempdir()
+    rutas = [p for p in sys.path if p]
+    if os.environ.get("PYTHONPATH"):
+        rutas.append(os.environ["PYTHONPATH"])
+    return {**os.environ, "HOME": tmp, "XDG_CACHE_HOME": tmp, "PYTHONPATH": os.pathsep.join(rutas)}
+
+
 def render_cv(
     yaml_content: str,
     angulo: str,
@@ -44,8 +58,7 @@ def render_cv(
         resultado = subprocess.run(
             [python_exe, "-m", "rendercv", "render", str(yaml_path), "--pdf-path", str(pdf_tmp)],
             cwd=tmp_dir,
-            # En Vercel solo /tmp es escribible: typst/rendercv cachean en el HOME.
-            env={**os.environ, "HOME": tempfile.gettempdir(), "XDG_CACHE_HOME": tempfile.gettempdir()} if os.environ.get("VERCEL") else None,
+            env=_env_subproceso(),
             capture_output=True,
             text=True,
             encoding="utf-8",
